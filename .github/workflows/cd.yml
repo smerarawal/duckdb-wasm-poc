@@ -1,0 +1,61 @@
+# Section 4 — Pipeline 2: CD Push Engine
+# Runs on every merge to main.
+# Compiles the production manifest.json and pushes it to the S3 assets
+# bucket so clients pick up new business logic with zero backend downtime.
+
+name: CD — deploy manifest
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'dbt/**'
+
+jobs:
+  dbt-cd:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dbt-duckdb + AWS CLI
+        run: pip install dbt-duckdb awscli
+
+      - name: Write dbt profiles (production target)
+        run: |
+          mkdir -p ~/.dbt
+          cat > ~/.dbt/profiles.yml << 'EOF'
+          analytics:
+            target: prod
+            outputs:
+              prod:
+                type: duckdb
+                path: ':memory:'
+                threads: 4
+          EOF
+
+      - name: dbt compile — generate production manifest.json
+        working-directory: dbt
+        run: dbt compile --profiles-dir ~/.dbt
+        env:
+          DBT_S3_BUCKET: ${{ secrets.PROD_S3_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.PROD_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.PROD_AWS_SECRET_ACCESS_KEY }}
+
+      - name: Deploy manifest.json to S3 assets bucket
+        run: |
+          aws s3 cp dbt/target/manifest.json \
+            s3://${{ secrets.PROD_S3_ASSETS_BUCKET }}/manifest.json \
+            --cache-control "no-cache, no-store"
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.PROD_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.PROD_AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+
+      # Clients automatically detect the new manifest on next dashboard load.
+      # Zero backend downtime — no server restart required.

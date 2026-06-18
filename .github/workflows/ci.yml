@@ -1,0 +1,53 @@
+# Section 4 — Pipeline 1: CI Quality Gate
+# Runs on every PR that touches dbt models.
+# Compiles the DAG and runs data contract tests against an ephemeral
+# in-memory DuckDB target. Blocks merge if any test fails.
+
+name: CI — dbt quality gate
+
+on:
+  pull_request:
+    paths:
+      - 'dbt/**'
+      - '.github/workflows/ci.yml'
+
+jobs:
+  dbt-ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dbt-duckdb
+        run: pip install dbt-duckdb
+
+      - name: Write dbt profiles (in-memory sandbox target)
+        run: |
+          mkdir -p ~/.dbt
+          cat > ~/.dbt/profiles.yml << 'EOF'
+          analytics:
+            target: ci
+            outputs:
+              ci:
+                type: duckdb
+                path: ':memory:'     # ephemeral — nothing persists
+                threads: 4
+          EOF
+
+      - name: dbt compile — validate DAG + SQL syntax
+        working-directory: dbt
+        run: dbt compile --profiles-dir ~/.dbt
+
+      - name: dbt test — enforce data contracts
+        working-directory: dbt
+        run: dbt test --profiles-dir ~/.dbt
+        env:
+          # dev S3 bucket for seeded test data
+          DBT_S3_BUCKET: ${{ secrets.DEV_S3_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.DEV_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.DEV_AWS_SECRET_ACCESS_KEY }}
